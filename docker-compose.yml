@@ -38,7 +38,7 @@ services:
     restart: unless-stopped
     oom_score_adj: 0
   broker:
-    image: redis:7.0.10
+    image: valkey/valkey:8.1.4-trixie
     container_name: broker
     restart: unless-stopped
     oom_score_adj: -500
