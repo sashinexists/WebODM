@@ -38,7 +38,7 @@ services:
     restart: unless-stopped
     oom_score_adj: 0
   broker:
-    image: redis:7.0.10
+    image: redis:8.2.2-bookworm
     container_name: broker
     restart: unless-stopped
     oom_score_adj: -500
