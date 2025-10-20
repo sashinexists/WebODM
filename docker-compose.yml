@@ -7,7 +7,7 @@ volumes:
   appmedia:
 services:
   db:
-    image: postgis/postgis:18-3.6
+    image: postgis/postgis:18-3.6-alpine
     container_name: db
     expose:
       - "5432"
