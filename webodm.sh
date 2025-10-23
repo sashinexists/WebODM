@@ -468,17 +468,58 @@ start(){
         command+=" -f docker-compose.ipv6.yml"
     	fi
 
-	command="$command up"
-
-	if [[ $detached = true ]]; then
-		command+=" -d"
-	fi
+	command="$command up -d"
 
 	if [[ $WO_DEFAULT_NODES -gt 0 ]]; then
 		command+=" --scale node-odm=$WO_DEFAULT_NODES"
 	fi
 
 	run "$command"
+
+	# Wait for database and run migrations
+	echo ""
+	echo "Waiting for database to be ready..."
+
+	max_attempts=30
+	attempt=0
+	while [ $attempt -lt $max_attempts ]; do
+		if $docker_compose exec -T db pg_isready -U postgres >/dev/null 2>&1; then
+			echo "Database is ready!"
+			break
+		fi
+		attempt=$((attempt + 1))
+		if [ $attempt -eq $max_attempts ]; then
+			echo -e "\033[93mWarning: Database readiness check timed out. Attempting migrations anyway...\033[39m"
+			break
+		fi
+		echo -n "."
+		sleep 2
+	done
+	echo ""
+
+	echo "Running database migrations..."
+	if $docker_compose exec -T webapp python manage.py migrate --noinput; then
+		echo -e "\033[92mMigrations completed successfully!\033[39m"
+	else
+		echo -e "\033[93mWarning: Migrations encountered an issue. WebODM may not function correctly.\033[39m"
+		echo -e "\033[93mShowing container logs for troubleshooting...\033[39m"
+		echo ""
+		# Show recent logs to help diagnose the issue
+		run "$docker_compose logs --tail=100"
+		echo ""
+		if [[ $detached = false ]]; then
+			echo -e "\033[93mContinuing to show live logs. Press Ctrl+C to exit.\033[39m"
+			echo ""
+			run "$docker_compose logs -f"
+		fi
+		exit 1
+	fi
+	echo ""
+
+	# Always show logs (user wants to see what's happening)
+	echo "WebODM started successfully! Showing container logs (press Ctrl+C to detach)..."
+	echo ""
+	run "$docker_compose logs -f"
 }
 
 down(){

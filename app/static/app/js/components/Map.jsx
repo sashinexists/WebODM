@@ -313,8 +313,10 @@ class Map extends React.Component {
                     if (type === 'plant'){
                       // percentile
                       for (let b in statistics){
-                        min = Math.min(statistics[b]["percentiles"][0]);
-                        max = Math.max(statistics[b]["percentiles"][1]);
+                        if (statistics[b]["percentiles"] && statistics[b]["percentiles"].length >= 2){
+                          min = Math.min(statistics[b]["percentiles"][0]);
+                          max = Math.max(statistics[b]["percentiles"][1]);
+                        }
                       }
                     }else{
                       // min/max

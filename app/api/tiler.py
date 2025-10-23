@@ -10,10 +10,8 @@ from .common import get_asset_download_filename
 from django.http import HttpResponse
 from rio_tiler.errors import TileOutsideBounds
 from rio_tiler.utils import has_alpha_band, \
-    non_alpha_indexes, render, create_cutline
-from rio_tiler.utils import _stats as raster_stats
-from rio_tiler.models import ImageStatistics, ImageData
-from rio_tiler.models import Metadata as RioMetadata
+    non_alpha_indexes, render, create_cutline, get_array_statistics
+from rio_tiler.models import BandStatistics, ImageData, Info
 from rio_tiler.profiles import img_profiles
 from rio_tiler.colormap import cmap as colormap, apply_cmap
 from rio_tiler.io import COGReader
@@ -200,15 +198,17 @@ class Metadata(TaskNestedView):
                     data = np.ma.array(data)
                     data.mask = mask == 0
                     stats = {
-                        str(b + 1): raster_stats(data[b], percentiles=(pmin, pmax), bins=255, range=hrange)
+                        str(b + 1): get_array_statistics(data[b], percentiles=[pmin, pmax], bins=255, range=hrange)[0]
                         for b in range(data.shape[0])
                     }
-                    stats = {b: ImageStatistics(**s) for b, s in stats.items()}
-                    metadata = RioMetadata(statistics=stats, **src.info().dict())
+                    stats_dict = {b: BandStatistics(**s).model_dump() for b, s in stats.items()}
+                    info = src.info().model_dump()
+                    info['statistics'] = stats_dict
                 else:
-                    metadata = src.metadata(pmin=pmin, pmax=pmax, hist_options=histogram_options, nodata=nodata,
-                                            bounds=bounds, vrt_options=vrt_options)
-                info = json.loads(metadata.json())
+                    stats = src.statistics(percentiles=[pmin, pmax], hist_options=histogram_options)
+                    stats_dict = {b: s.model_dump() for b, s in stats.items()}
+                    info = src.info().model_dump()
+                    info['statistics'] = stats_dict
         except IndexError as e:
             # Caught when trying to get an invalid raster metadata
             # or when the crop area is defined improperly. In order
@@ -219,13 +219,48 @@ class Metadata(TaskNestedView):
                 task.save()
             
             raise exceptions.ValidationError("Cannot retrieve raster metadata: %s" % str(e))
+        # Sanitize statistics to remove inf/nan values and unwrap parsedValue objects
+        def sanitize_value(val):
+            """Replace inf and nan values with None, unwrap parsedValue objects"""
+            # Handle new rio-tiler format with {source: "...", parsedValue: ...}
+            if isinstance(val, dict) and 'parsedValue' in val:
+                val = val['parsedValue']
+
+            if isinstance(val, (float, np.floating)):
+                if np.isinf(val) or np.isnan(val):
+                    return None
+            return val
+
+        def sanitize_dict(d):
+            """Recursively sanitize dictionary values"""
+            if isinstance(d, dict):
+                # Check if this is a parsedValue wrapper object
+                if 'parsedValue' in d and 'source' in d:
+                    return sanitize_value(d['parsedValue'])
+                return {k: sanitize_dict(v) for k, v in d.items()}
+            elif isinstance(d, list):
+                return [sanitize_dict(item) for item in d]
+            else:
+                return sanitize_value(d)
+
+        # Sanitize all statistics and other fields
+        if 'statistics' in info:
+            info['statistics'] = sanitize_dict(info['statistics'])
+
+        # Also sanitize other fields that might have parsedValue wrappers
+        for field in ['scales', 'offsets']:
+            if field in info:
+                info[field] = sanitize_dict(info[field])
+
         # Override min/max
         if hrange:
             for b in info['statistics']:
                 info['statistics'][b]['min'] = hrange[0]
                 info['statistics'][b]['max'] = hrange[1]
-                info['statistics'][b]['percentiles'][0] = max(hrange[0], info['statistics'][b]['percentiles'][0])
-                info['statistics'][b]['percentiles'][1] = min(hrange[1], info['statistics'][b]['percentiles'][1])
+                # Only override percentiles if they exist in the statistics
+                if 'percentiles' in info['statistics'][b] and info['statistics'][b]['percentiles'] is not None:
+                    info['statistics'][b]['percentiles'][0] = max(hrange[0], info['statistics'][b]['percentiles'][0])
+                    info['statistics'][b]['percentiles'][1] = min(hrange[1], info['statistics'][b]['percentiles'][1])
 
         cmap_labels = {
             "viridis": "Viridis",
@@ -285,7 +320,15 @@ class Metadata(TaskNestedView):
             info['maxzoom'] = info['minzoom']
         info['maxzoom'] += ZOOM_EXTRA_LEVELS
         info['minzoom'] -= ZOOM_EXTRA_LEVELS
-        info['bounds'] = {'value': bounds if bounds is not None else src.bounds, 'crs': src.dataset.crs}
+
+        # Convert CRS to JSON-serializable format
+        crs = src.dataset.crs
+        crs_json = crs.to_string() if crs is not None else None
+        info['bounds'] = {'value': bounds if bounds is not None else src.bounds, 'crs': crs_json}
+
+        # Ensure any CRS objects in info dict are also serializable
+        if 'crs' in info and isinstance(info['crs'], CRS):
+            info['crs'] = info['crs'].to_string()
 
         return Response(info)
 

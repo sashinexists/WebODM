@@ -178,7 +178,7 @@ AUTHENTICATION_BACKENDS = (
 # https://docs.djangoproject.com/en/1.10/topics/i18n/
 
 LANGUAGE_CODE = 'en-us'
-TIME_ZONE = tzlocal.get_localzone().zone
+TIME_ZONE = str(tzlocal.get_localzone())
 USE_I18N = True
 USE_L10N = True
 USE_TZ = True
@@ -322,15 +322,16 @@ REST_FRAMEWORK = {
   'DEFAULT_AUTHENTICATION_CLASSES': (
     'rest_framework.authentication.SessionAuthentication',
     'rest_framework.authentication.BasicAuthentication',
-    'rest_framework_jwt.authentication.JSONWebTokenAuthentication',
+    'rest_framework_simplejwt.authentication.JWTAuthentication',
     'app.api.authentication.JSONWebTokenAuthenticationQS',
   ),
   'PAGE_SIZE': 10,
   'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.PageNumberPagination',
 }
 
-JWT_AUTH = {
-    'JWT_EXPIRATION_DELTA': datetime.timedelta(hours=6),
+SIMPLE_JWT = {
+    'ACCESS_TOKEN_LIFETIME': datetime.timedelta(hours=6),
+    'REFRESH_TOKEN_LIFETIME': datetime.timedelta(days=1),
 }
 
 # Celery

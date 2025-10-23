@@ -1,18 +1,15 @@
 # syntax=docker/dockerfile:1
-FROM ubuntu:22.04 AS common
+FROM python:3.12-slim-bookworm AS common
 LABEL maintainer="Piero Toffanin <pt@masseranolabs.com>"
 
 # Build-time variables
 ARG DEBIAN_FRONTEND=noninteractive
 ARG NODE_MAJOR=20
-ARG PYTHON_VERSION=3.9
-ARG RELEASE_CODENAME=jammy
 ARG WORKDIR=/webodm
 
 # Run-time variables
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONPATH=$WORKDIR
-ENV PROJ_LIB=/usr/share/proj
 
 #### Common setup ####
 
@@ -41,40 +38,58 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     <<EOT
     # Build-time dependencies
     apt-get -qq update
-    apt-get install -y --no-install-recommends curl ca-certificates gnupg cmake g++ libpdal-dev
-    # Python 3.9 support
-    curl -fsSL 'https://keyserver.ubuntu.com/pks/lookup?op=get&search=0xf23c5a6cf475977595c89f51ba6932366a755776' | gpg --dearmor -o /etc/apt/trusted.gpg.d/deadsnakes.gpg
-    echo "deb http://ppa.launchpadcontent.net/deadsnakes/ppa/ubuntu $RELEASE_CODENAME main" > /etc/apt/sources.list.d/deadsnakes.list
+    apt-get install -y --no-install-recommends \
+        curl ca-certificates gnupg cmake g++ wget \
+        libgeotiff-dev libgeos-dev libtiff-dev libcurl4-openssl-dev \
+        libxml2-dev libsqlite3-dev sqlite3 pkg-config
     # Node.js deb source
-    curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | gpg --dearmor -o /etc/apt/trusted.gpg.d/nodesource.gpg
-    echo "deb https://deb.nodesource.com/node_$NODE_MAJOR.x nodistro main" > /etc/apt/sources.list.d/nodesource.list
+    curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg
+    echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_$NODE_MAJOR.x nodistro main" > /etc/apt/sources.list.d/nodesource.list
     # Update package list
     apt-get update
     # Install common deps, starting with NodeJS
     apt-get -qq install -y nodejs
-    # Python3.9, GDAL, PDAL, nginx, letsencrypt, psql
+    # Python dev tools, GDAL, nginx, letsencrypt, psql
     apt-get install -y --no-install-recommends \
-        python$PYTHON_VERSION python$PYTHON_VERSION-venv python$PYTHON_VERSION-dev libpq-dev build-essential git libproj-dev gdal-bin pdal \
+        python3-dev libpq-dev build-essential git gdal-bin \
         libgdal-dev nginx certbot gettext-base cron postgresql-client gettext tzdata
-    # Create virtualenv
-    python$PYTHON_VERSION -m venv $WORKDIR/venv
-    # Build entwine
-    mkdir /staging && cd /staging
-    git clone -b 290 https://github.com/OpenDroneMap/entwine && cd entwine
-    mkdir build && cd build && cmake .. -DWITH_TESTS=OFF -DWITH_ZSTD=OFF -DCMAKE_INSTALL_PREFIX=/staging/entwine/build/install && make -j6 && make install
+    # Build PROJ from source (need modern version for new rasterio/rio-tiler)
+    mkdir -p /staging && cd /staging
+    wget -q https://download.osgeo.org/proj/proj-9.4.1.tar.gz
+    tar xzf proj-9.4.1.tar.gz && cd proj-9.4.1
+    mkdir build && cd build
+    cmake .. -DCMAKE_INSTALL_PREFIX=/staging/proj/install -DCMAKE_BUILD_TYPE=Release \
+        -DBUILD_TESTING=OFF -DBUILD_PROJSYNC=OFF
+    make -j6 && make install
+    # Update environment to use our compiled PROJ
+    export PKG_CONFIG_PATH=/staging/proj/install/lib/pkgconfig:$PKG_CONFIG_PATH
+    export LD_LIBRARY_PATH=/staging/proj/install/lib:$LD_LIBRARY_PATH
+    # Build PDAL from source (not available in Debian repos)
+    cd /staging
+    wget -q https://github.com/PDAL/PDAL/releases/download/2.6.3/PDAL-2.6.3-src.tar.bz2
+    tar xjf PDAL-2.6.3-src.tar.bz2 && cd PDAL-2.6.3-src
+    mkdir build && cd build
+    cmake .. -DCMAKE_INSTALL_PREFIX=/staging/pdal/install -DCMAKE_BUILD_TYPE=Release \
+        -DBUILD_PLUGIN_PGPOINTCLOUD=OFF -DBUILD_PLUGIN_NITF=OFF -DBUILD_PLUGIN_ICEBRIDGE=OFF \
+        -DBUILD_PLUGIN_HDF=OFF -DWITH_TESTS=OFF -DWITH_ZSTD=OFF
+    make -j6 && make install
+    # Note: Entwine build removed - incompatible with PDAL 2.6.3
+    # Entwine is used for EPT (Entwine Point Tile) generation
+    # WebODM can function without it for core photogrammetry tasks
     cd /webodm
 EOT
-
-# Modify PATH to prioritize venv, effectively activating venv
-ENV PATH="$WORKDIR/venv/bin:$PATH"
 
 RUN --mount=type=cache,target=/root/.cache/pip \
     <<EOT
     # Install Python dependencies
+    # Set environment to use our compiled PROJ
+    export PKG_CONFIG_PATH=/staging/proj/install/lib/pkgconfig:\$PKG_CONFIG_PATH
+    export LD_LIBRARY_PATH=/staging/proj/install/lib:\$LD_LIBRARY_PATH
+    export PROJ_LIB=/staging/proj/install/share/proj
     # Install pip
     pip install pip==24.0
     # Install Python requirements, including correct Python GDAL bindings.
-    pip install -r requirements.txt "boto3==1.14.14" gdal[numpy]=="$(gdal-config --version).*"
+    pip install -r requirements.txt "boto3==1.26.137" gdal[numpy]=="$(gdal-config --version).*"
 EOT
 
 # Install project Node dependencies
@@ -117,9 +132,6 @@ EOT
 
 FROM common AS app
 
-# Modify PATH to prioritize venv, effectively activating venv
-ENV PATH="$WORKDIR/venv/bin:$PATH"
-
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     --mount=type=cache,target=/root/.npm \
@@ -127,20 +139,18 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     # Run-time dependencies
     apt-get -qq update
     apt-get install -y --no-install-recommends curl ca-certificates gnupg
-    # Legacy Python support
-    curl -fsSL 'https://keyserver.ubuntu.com/pks/lookup?op=get&search=0xf23c5a6cf475977595c89f51ba6932366a755776' | gpg --dearmor -o /etc/apt/trusted.gpg.d/deadsnakes.gpg
-    echo "deb http://ppa.launchpadcontent.net/deadsnakes/ppa/ubuntu $RELEASE_CODENAME main" > /etc/apt/sources.list.d/deadsnakes.list
     # Node.js deb source
-    curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | gpg --dearmor -o /etc/apt/trusted.gpg.d/nodesource.gpg
-    echo "deb https://deb.nodesource.com/node_$NODE_MAJOR.x nodistro main" > /etc/apt/sources.list.d/nodesource.list
+    curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg
+    echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_$NODE_MAJOR.x nodistro main" > /etc/apt/sources.list.d/nodesource.list
     # Update package list
     apt-get update
     # Install common deps, starting with NodeJS
     apt-get -qq install -y nodejs
-    # Python, GDAL, PDAL, nginx, letsencrypt, psql, git
+    # GDAL, nginx, letsencrypt, psql, git + runtime deps
+    # Note: PROJ will be copied from build stage (compiled version)
     apt-get install -y --no-install-recommends \
-        python$PYTHON_VERSION python$PYTHON_VERSION-distutils gdal-bin pdal \
-        nginx certbot gettext-base cron postgresql-client gettext tzdata git
+        gdal-bin nginx certbot gettext-base cron postgresql-client gettext tzdata git \
+        libgeos-c1v5 libxml2 libcurl4 libsqlite3-0 libtiff6
     # Install webpack, webpack CLI
     npm install --quiet -g webpack@5.89.0
     npm install --quiet -g webpack-cli@5.1.4
@@ -152,8 +162,23 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     rm -rf /tmp/* /var/tmp/*
 EOT
 
-COPY --from=build /staging/entwine/build/install/bin/entwine /usr/bin/entwine
-COPY --from=build /staging/entwine/build/install/lib/libentwine* /usr/lib/
+# Copy Python packages and binaries from build stage
+COPY --from=build /usr/local/lib/python3.12/site-packages/ /usr/local/lib/python3.12/site-packages/
+COPY --from=build /usr/local/bin/ /usr/local/bin/
+# Copy PROJ, PDAL and other compiled libraries
+COPY --from=build /staging/proj/install/ /usr/local/
+# Entwine removed - incompatible with PDAL 2.6.3
+# COPY --from=build /staging/entwine/build/install/bin/entwine /usr/bin/entwine
+# COPY --from=build /staging/entwine/build/install/lib/libentwine* /usr/lib/
+COPY --from=build /staging/pdal/install/bin/pdal /usr/bin/pdal
+COPY --from=build /staging/pdal/install/lib/libpdal* /usr/lib/
+COPY --from=build /usr/lib/x86_64-linux-gnu/libgeotiff.so* /usr/lib/x86_64-linux-gnu/
+# Copy WebODM application code
 COPY --from=build $WORKDIR ./
+
+# Set PROJ_LIB to point to our compiled PROJ data files
+ENV PROJ_LIB=/usr/local/share/proj
+
+RUN ldconfig
 
 VOLUME /webodm/app/media

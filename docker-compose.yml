@@ -3,6 +3,7 @@
 version: '2.1'
 volumes:
   dbdata:
+  dbdata-pg15:
   appmedia:
 services:
   db:

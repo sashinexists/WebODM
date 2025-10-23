@@ -11,7 +11,7 @@ Environment=SHELL=/bin/bash
 Environment=LANG=en_US.UTF-8
 PIDFile=/run/webodm-celery.pid
 WorkingDirectory=/webodm
-ExecStart=/webodm/python3-venv/bin/celery -A worker worker --autoscale 8,2 --max-tasks-per-child 1000 --loglevel=warn
+ExecStart=/webodm/python3-venv/bin/celery -A worker worker --autoscale 8,2 --max-tasks-per-child 1000 --loglevel=WARNING
 ExecStop=/bin/kill -s QUIT $MAINPID
 Restart=on-failure
 
