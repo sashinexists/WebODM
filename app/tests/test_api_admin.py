@@ -2,7 +2,6 @@ import time
 from django.contrib.auth.models import User, Group
 from rest_framework import status
 from rest_framework.test import APIClient
-from rest_framework_jwt.settings import api_settings
 from django.contrib.auth.hashers import check_password
 
 from .classes import BootTestCase
@@ -30,8 +29,8 @@ class TestApi(BootTestCase):
             'password': super_user_pass,
         })
         self.assertEqual(res.status_code, status.HTTP_200_OK)
-        super_user_token = res.data['token']
-        client = APIClient(HTTP_AUTHORIZATION="{0} {1}".format(api_settings.JWT_AUTH_HEADER_PREFIX, super_user_token))
+        super_user_token = res.data['access']
+        client = APIClient(HTTP_AUTHORIZATION="Bearer {0}".format(super_user_token))
 
         # Can create (active) user
         res = client.post('/api/admin/users/', {'username': 'testuser999', 'email': 'testuser999@test.com', 'password': 'test999', 'is_active': True})
@@ -88,8 +87,8 @@ class TestApi(BootTestCase):
             'password': user_pass,
         })
         self.assertEqual(res.status_code, status.HTTP_200_OK)
-        user_token = res.data['token']
-        client = APIClient(HTTP_AUTHORIZATION="{0} {1}".format(api_settings.JWT_AUTH_HEADER_PREFIX, user_token))
+        user_token = res.data['access']
+        client = APIClient(HTTP_AUTHORIZATION="Bearer {0}".format(user_token))
 
         # Can't create user
         res = client.post('/api/admin/users/', {'username': 'testuser999', 'email': 'testuser999@test.com', 'password': 'test999', 'is_active': True})
@@ -126,8 +125,8 @@ class TestApi(BootTestCase):
             'password': super_user_pass,
         })
         self.assertEqual(res.status_code, status.HTTP_200_OK)
-        super_user_token = res.data['token']
-        client = APIClient(HTTP_AUTHORIZATION="{0} {1}".format(api_settings.JWT_AUTH_HEADER_PREFIX, super_user_token))
+        super_user_token = res.data['access']
+        client = APIClient(HTTP_AUTHORIZATION="Bearer {0}".format(super_user_token))
 
         # Can create group
         res = client.post('/api/admin/groups/', {'name': 'Test', 'permissions': [53, 54]})
@@ -180,8 +179,8 @@ class TestApi(BootTestCase):
             'password': user_pass,
         })
         self.assertEqual(res.status_code, status.HTTP_200_OK)
-        user_token = res.data['token']
-        client = APIClient(HTTP_AUTHORIZATION="{0} {1}".format(api_settings.JWT_AUTH_HEADER_PREFIX, user_token))
+        user_token = res.data['access']
+        client = APIClient(HTTP_AUTHORIZATION="Bearer {0}".format(user_token))
 
         # Can't create group
         res = client.post('/api/admin/groups/', {'name': 'Test', 'permissions': [53, 54]})

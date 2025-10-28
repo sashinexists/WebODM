@@ -1,12 +1,8 @@
 # syntax=docker/dockerfile:1
-FROM ubuntu:22.04 AS common
+FROM python:3.12-alpine3.22 AS builder
 LABEL maintainer="Piero Toffanin <pt@masseranolabs.com>"
 
 # Build-time variables
-ARG DEBIAN_FRONTEND=noninteractive
-ARG NODE_MAJOR=20
-ARG PYTHON_VERSION=3.9
-ARG RELEASE_CODENAME=jammy
 ARG WORKDIR=/webodm
 
 # Run-time variables
@@ -14,146 +10,251 @@ ENV PYTHONUNBUFFERED=1
 ENV PYTHONPATH=$WORKDIR
 ENV PROJ_LIB=/usr/share/proj
 
-#### Common setup ####
-
 # Create and change into working directory
 WORKDIR $WORKDIR
 
-# Allow multi-line runs, break on errors and output commands for debugging.
-# The following does not work in Podman unless you build in Docker
-# compatibility mode: <https://github.com/containers/podman/issues/8477>
-# You can manually prepend every RUN script with `set -ex` too.
+# Allow multi-line runs, break on errors and output commands for debugging
 SHELL ["sh", "-exc"]
 
-RUN <<EOT
-    # Common system configuration, should change very infrequently
-    # Set timezone to UTC
-    echo "UTC" > /etc/timezone
-EOT
+RUN echo "UTC" > /etc/timezone
 
-FROM common AS build
+#### BUILD STAGE ####
 
-# Install Python deps -- install & remove cleanup build-only deps in the process
-COPY requirements.txt ./
-
-RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
-    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+# Install build dependencies and runtime dependencies
+RUN --mount=type=cache,target=/var/cache/apk,sharing=locked \
     <<EOT
-    # Build-time dependencies
-    apt-get -qq update
-    apt-get install -y --no-install-recommends curl ca-certificates gnupg cmake g++ libpdal-dev
-    # Python 3.9 support
-    curl -fsSL 'https://keyserver.ubuntu.com/pks/lookup?op=get&search=0xf23c5a6cf475977595c89f51ba6932366a755776' | gpg --dearmor -o /etc/apt/trusted.gpg.d/deadsnakes.gpg
-    echo "deb http://ppa.launchpadcontent.net/deadsnakes/ppa/ubuntu $RELEASE_CODENAME main" > /etc/apt/sources.list.d/deadsnakes.list
-    # Node.js deb source
-    curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | gpg --dearmor -o /etc/apt/trusted.gpg.d/nodesource.gpg
-    echo "deb https://deb.nodesource.com/node_$NODE_MAJOR.x nodistro main" > /etc/apt/sources.list.d/nodesource.list
-    # Update package list
-    apt-get update
-    # Install common deps, starting with NodeJS
-    apt-get -qq install -y nodejs
-    # Python3.9, GDAL, PDAL, nginx, letsencrypt, psql
-    apt-get install -y --no-install-recommends \
-        python$PYTHON_VERSION python$PYTHON_VERSION-venv python$PYTHON_VERSION-dev libpq-dev build-essential git libproj-dev gdal-bin pdal \
-        libgdal-dev nginx certbot gettext-base cron postgresql-client gettext tzdata
-    # Create virtualenv
-    python$PYTHON_VERSION -m venv $WORKDIR/venv
-    # Build entwine
-    mkdir /staging && cd /staging
-    git clone -b 290 https://github.com/OpenDroneMap/entwine && cd entwine
-    mkdir build && cd build && cmake .. -DWITH_TESTS=OFF -DWITH_ZSTD=OFF -DCMAKE_INSTALL_PREFIX=/staging/entwine/build/install && make -j6 && make install
-    cd /webodm
+    # Enable community and testing repos for PDAL
+    echo "https://dl-cdn.alpinelinux.org/alpine/v3.22/main" > /etc/apk/repositories
+    echo "https://dl-cdn.alpinelinux.org/alpine/v3.22/community" >> /etc/apk/repositories
+
+    # Update package index
+    apk update
+
+    # Build dependencies
+    apk add --no-cache \
+        build-base \
+        cmake \
+        ninja \
+        git \
+        curl \
+        ca-certificates \
+        bash \
+        coreutils
+
+    # Install libexecinfo from Alpine 3.16 (removed in 3.17+)
+    apk add --no-cache --update --repository=https://dl-cdn.alpinelinux.org/alpine/v3.16/main/ \
+        libexecinfo-dev \
+        libexecinfo
+
+    # Geospatial libraries
+    apk add --no-cache \
+        gdal \
+        gdal-dev \
+        gdal-tools \
+        gdal-driver-png \
+        gdal-driver-jpeg \
+        gdal-driver-webp \
+        pdal \
+        pdal-dev \
+        proj \
+        proj-dev \
+        proj-util \
+        geos \
+        geos-dev \
+        sqlite \
+        sqlite-dev \
+        py3-shapely
+
+    # PostgreSQL
+    apk add --no-cache \
+        postgresql-dev \
+        postgresql-client
+
+    # Python development
+    apk add --no-cache \
+        python3-dev
+
+    # Image libraries for Pillow
+    apk add --no-cache \
+        libjpeg-turbo-dev \
+        libpng-dev \
+        libwebp-dev \
+        zlib-dev \
+        tiff-dev
+
+    # System utilities
+    apk add --no-cache \
+        nginx \
+        dcron \
+        tzdata \
+        gettext \
+        gettext-dev
+
+    # Node.js and npm
+    apk add --no-cache \
+        nodejs \
+        npm
 EOT
+
+# Build Entwine from source (using latest version for PDAL 2.8+ compatibility)
+RUN --mount=type=cache,target=/root/.cache,sharing=locked \
+    <<EOT
+    mkdir /staging && cd /staging
+    git clone https://github.com/connormanning/entwine && cd entwine
+    git checkout 3.2.1
+    mkdir build && cd build
+    cmake .. \
+        -G Ninja \
+        -DWITH_TESTS=OFF \
+        -DCMAKE_INSTALL_PREFIX=/staging/entwine/build/install \
+        -DCMAKE_BUILD_TYPE=Release
+    ninja -j$(nproc)
+    ninja install
+    cd $WORKDIR
+EOT
+
+# Create virtualenv
+RUN python3 -m venv $WORKDIR/venv
 
 # Modify PATH to prioritize venv, effectively activating venv
 ENV PATH="$WORKDIR/venv/bin:$PATH"
 
+# Copy requirements first for better caching
+COPY requirements.txt ./
+
+# Upgrade pip and install Python dependencies
 RUN --mount=type=cache,target=/root/.cache/pip \
     <<EOT
-    # Install Python dependencies
-    # Install pip
-    pip install pip==24.0
-    # Install Python requirements, including correct Python GDAL bindings.
-    pip install -r requirements.txt "boto3==1.14.14" gdal[numpy]=="$(gdal-config --version).*"
+    pip install --upgrade pip setuptools wheel
+
+    # Install GDAL Python bindings matching system GDAL version
+    GDAL_VERSION=$(gdal-config --version)
+    pip install "gdal[numpy]==${GDAL_VERSION}.*"
+
+    # Install requirements (will be updated separately)
+    pip install -r requirements.txt
+
+    # Install additional geospatial packages
+    pip install "boto3>=1.34.0"
 EOT
 
 # Install project Node dependencies
-COPY package.json ./
+COPY package.json package-lock.json* ./
 RUN --mount=type=cache,target=/root/.npm \
     <<EOT
     npm install --quiet
-    # Install webpack, webpack CLI
-    npm install --quiet -g webpack@5.89.0
-    npm install --quiet -g webpack-cli@5.1.4
+    # Install webpack and webpack CLI globally
+    npm install --quiet -g webpack@5.89.0 webpack-cli@5.1.4
 EOT
 
 # Copy remaining files
 COPY . ./
 
-# Defining this here allows for caching of previous layers.
+# Defining this here allows for caching of previous layers
 ARG TEST_BUILD
 
+# Final build steps
 RUN <<EOT
-    # Final build steps (in one roll to prevent too many layers).
     # Setup cron
     chmod 0644 ./nginx/crontab
-    ln -s ./nginx/crontab /var/spool/cron/crontabs/root
+    mkdir -p /var/spool/cron/crontabs
+    ln -sf $WORKDIR/nginx/crontab /var/spool/cron/crontabs/root
+
     # NodeODM setup
     chmod +x ./nginx/letsencrypt-autogen.sh
     ./nodeodm/setup.sh
     ./nodeodm/cleanup.sh
-    # Run webpack build, Django setup and final cleanup
+
+    # Run webpack build
     webpack --mode production
+
     # Django setup
     python manage.py collectstatic --noinput
     python manage.py rebuildplugins
     python manage.py translate build --safe
-    # Final cleanup
-    # Remove stale temp files
-    rm -rf /tmp/* /var/tmp/*
-    # Remove auto-generated secret key (happens on import of settings when none is defined)
-    rm /webodm/webodm/secret_key.py
+
+    # Remove auto-generated secret key
+    rm -f /webodm/webodm/secret_key.py
 EOT
 
-FROM common AS app
+#### RUNTIME STAGE ####
 
-# Modify PATH to prioritize venv, effectively activating venv
+FROM python:3.12-alpine3.22 AS runtime
+
+ARG WORKDIR=/webodm
+
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONPATH=$WORKDIR
+ENV PROJ_LIB=/usr/share/proj
 ENV PATH="$WORKDIR/venv/bin:$PATH"
 
-RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
-    --mount=type=cache,target=/var/lib/apt,sharing=locked \
-    --mount=type=cache,target=/root/.npm \
+WORKDIR $WORKDIR
+
+SHELL ["sh", "-exc"]
+
+# Install only runtime dependencies
+RUN --mount=type=cache,target=/var/cache/apk,sharing=locked \
     <<EOT
-    # Run-time dependencies
-    apt-get -qq update
-    apt-get install -y --no-install-recommends curl ca-certificates gnupg
-    # Legacy Python support
-    curl -fsSL 'https://keyserver.ubuntu.com/pks/lookup?op=get&search=0xf23c5a6cf475977595c89f51ba6932366a755776' | gpg --dearmor -o /etc/apt/trusted.gpg.d/deadsnakes.gpg
-    echo "deb http://ppa.launchpadcontent.net/deadsnakes/ppa/ubuntu $RELEASE_CODENAME main" > /etc/apt/sources.list.d/deadsnakes.list
-    # Node.js deb source
-    curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | gpg --dearmor -o /etc/apt/trusted.gpg.d/nodesource.gpg
-    echo "deb https://deb.nodesource.com/node_$NODE_MAJOR.x nodistro main" > /etc/apt/sources.list.d/nodesource.list
-    # Update package list
-    apt-get update
-    # Install common deps, starting with NodeJS
-    apt-get -qq install -y nodejs
-    # Python, GDAL, PDAL, nginx, letsencrypt, psql, git
-    apt-get install -y --no-install-recommends \
-        python$PYTHON_VERSION python$PYTHON_VERSION-distutils gdal-bin pdal \
-        nginx certbot gettext-base cron postgresql-client gettext tzdata git
-    # Install webpack, webpack CLI
-    npm install --quiet -g webpack@5.89.0
-    npm install --quiet -g webpack-cli@5.1.4
-    # Cleanup of build requirements
-    apt-get autoremove -y
-    apt-get clean
-    rm -rf /var/lib/apt/lists/*
-    # Remove stale temp files
-    rm -rf /tmp/* /var/tmp/*
+    echo "UTC" > /etc/timezone
+
+    # Enable community repo
+    echo "https://dl-cdn.alpinelinux.org/alpine/v3.22/main" > /etc/apk/repositories
+    echo "https://dl-cdn.alpinelinux.org/alpine/v3.22/community" >> /etc/apk/repositories
+
+    apk update
+
+    # Runtime dependencies only
+    apk add --no-cache \
+        bash \
+        coreutils \
+        curl \
+        ca-certificates \
+        gdal \
+        gdal-tools \
+        gdal-driver-png \
+        gdal-driver-jpeg \
+        gdal-driver-webp \
+        pdal \
+        proj \
+        proj-util \
+        geos \
+        sqlite \
+        postgresql-client \
+        nginx \
+        dcron \
+        tzdata \
+        gettext \
+        nodejs \
+        npm \
+        git \
+        libjpeg-turbo \
+        libpng \
+        libwebp \
+        tiff \
+        py3-shapely
+
+    # Install libexecinfo from Alpine 3.16 (removed in 3.17+)
+    apk add --no-cache --update --repository=https://dl-cdn.alpinelinux.org/alpine/v3.16/main/ \
+        libexecinfo
+
+    # Install webpack globally (needed for dev mode)
+    npm install --quiet -g webpack@5.89.0 webpack-cli@5.1.4
+
+    # Cleanup
+    rm -rf /var/cache/apk/* /tmp/* /var/tmp/*
 EOT
 
-COPY --from=build /staging/entwine/build/install/bin/entwine /usr/bin/entwine
-COPY --from=build /staging/entwine/build/install/lib/libentwine* /usr/lib/
-COPY --from=build $WORKDIR ./
+# Copy virtualenv from builder
+COPY --from=builder $WORKDIR/venv $WORKDIR/venv
+
+# Make system packages (py3-shapely) accessible to venv
+RUN echo "/usr/lib/python3.12/site-packages" > $WORKDIR/venv/lib/python3.12/site-packages/system-packages.pth
+
+# Copy Entwine binary and libraries
+COPY --from=builder /staging/entwine/build/install/bin/entwine /usr/bin/entwine
+COPY --from=builder /staging/entwine/build/install/lib/libentwine* /usr/lib/
+
+# Copy application code and built assets
+COPY --from=builder $WORKDIR $WORKDIR
 
 VOLUME /webodm/app/media

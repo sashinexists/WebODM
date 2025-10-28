@@ -11,9 +11,9 @@ from django.http import HttpResponse
 from rio_tiler.errors import TileOutsideBounds
 from rio_tiler.utils import has_alpha_band, \
     non_alpha_indexes, render, create_cutline
-from rio_tiler.utils import _stats as raster_stats
-from rio_tiler.models import ImageStatistics, ImageData
-from rio_tiler.models import Metadata as RioMetadata
+from rio_tiler.utils import get_array_statistics as raster_stats
+from rio_tiler.models import BandStatistics, ImageData
+from rio_tiler.models import Info as RioMetadata
 from rio_tiler.profiles import img_profiles
 from rio_tiler.colormap import cmap as colormap, apply_cmap
 from rio_tiler.io import COGReader
@@ -49,7 +49,8 @@ for custom_colormap in custom_colormaps:
 
 
 def get_zoom_safe(src_dst):
-    minzoom, maxzoom = src_dst.spatial_info["minzoom"], src_dst.spatial_info["maxzoom"]
+    # In rio-tiler 7.x, minzoom and maxzoom are properties, not in spatial_info dict
+    minzoom, maxzoom = src_dst.minzoom, src_dst.maxzoom
     if maxzoom < minzoom:
         maxzoom = minzoom
     return minzoom, maxzoom
@@ -93,7 +94,31 @@ def get_pointcloud_path(task):
     return task.get_asset_download_path("georeferenced_model.laz")
 
 
-class TileJson(TaskNestedView):
+class TilerTaskView(TaskNestedView):
+    """
+    Base view for tiler endpoints that need extent fields
+    Override queryset to not defer extent fields since they're needed for tile rendering
+    """
+    def get_and_check_task(self, request, pk, annotate={}):
+        # Import here to avoid circular import
+        from app import models
+        from django.core.exceptions import ObjectDoesNotExist, ValidationError
+        from .projects import get_and_check_project
+
+        try:
+            # Don't defer extent fields for tiler views
+            task = models.Task.objects.all().annotate(**annotate).get(pk=pk)
+        except (ObjectDoesNotExist, ValidationError):
+            raise exceptions.NotFound()
+
+        # Check for permissions, unless the task is public
+        if not (task.public or task.project.public):
+            get_and_check_project(request, task.project.id)
+
+        return task
+
+
+class TileJson(TilerTaskView):
     def get(self, request, pk=None, project_pk=None, tile_type=""):
         """
         Get tile.json for this tasks's asset type
@@ -119,7 +144,7 @@ class TileJson(TaskNestedView):
         })
 
 
-class Bounds(TaskNestedView):
+class Bounds(TilerTaskView):
     def get(self, request, pk=None, project_pk=None, tile_type=""):
         """
         Get the bounds for this tasks's asset type
@@ -132,7 +157,7 @@ class Bounds(TaskNestedView):
         })
 
 
-class Metadata(TaskNestedView):
+class Metadata(TilerTaskView):
     def get(self, request, pk=None, project_pk=None, tile_type=""):
         """
         Get the metadata for this tasks's asset type
@@ -195,20 +220,56 @@ class Metadata(TaskNestedView):
                 if tile_type == 'orthophoto':
                     nodata = 0
                 histogram_options = {"bins": 255, "range": hrange}
-                if expr is not None:
-                    data, mask = src.preview(expression=expr, vrt_options=vrt_options)
+                # If we have cropping/bounds or expression, use preview() with manual stats
+                if expr is not None or vrt_options is not None or bounds is not None:
+                    if expr is not None:
+                        data, mask = src.preview(expression=expr, vrt_options=vrt_options)
+                    else:
+                        # Use preview for cropped data
+                        data, mask = src.preview(vrt_options=vrt_options)
                     data = np.ma.array(data)
                     data.mask = mask == 0
                     stats = {
                         str(b + 1): raster_stats(data[b], percentiles=(pmin, pmax), bins=255, range=hrange)
                         for b in range(data.shape[0])
                     }
-                    stats = {b: ImageStatistics(**s) for b, s in stats.items()}
-                    metadata = RioMetadata(statistics=stats, **src.info().dict())
+                    # raster_stats returns a list with one dict per band, extract the first element
+                    stats = {b: BandStatistics(**s[0]) for b, s in stats.items()}
+                    # Get info dict and add minzoom/maxzoom from Reader properties
+                    info_dict = src.info().dict()
+                    info_dict['minzoom'] = src.minzoom
+                    info_dict['maxzoom'] = src.maxzoom
+                    metadata = RioMetadata(statistics=stats, **info_dict)
                 else:
-                    metadata = src.metadata(pmin=pmin, pmax=pmax, hist_options=histogram_options, nodata=nodata,
-                                            bounds=bounds, vrt_options=vrt_options)
+                    # In rio-tiler 7.x, use statistics() for simple case without cropping
+                    stats = src.statistics(
+                        percentiles=[pmin, pmax],
+                        hist_options=histogram_options
+                    )
+                    # Normalize band keys from "b1", "b2", etc. to "1", "2", etc. for frontend compatibility
+                    # rio-tiler 7.x returns keys as "b1", "b2", but frontend expects "1", "2"
+                    normalized_stats = {}
+                    for key, value in stats.items():
+                        if key.startswith('b') and key[1:].isdigit():
+                            normalized_stats[key[1:]] = value  # "b1" -> "1", "b2" -> "2", etc.
+                        else:
+                            normalized_stats[key] = value
+                    stats = normalized_stats
+                    # Get info dict and add minzoom/maxzoom from Reader properties
+                    info_dict = src.info().dict()
+                    info_dict['minzoom'] = src.minzoom
+                    info_dict['maxzoom'] = src.maxzoom
+                    metadata = RioMetadata(statistics=stats, **info_dict)
                 info = json.loads(metadata.json())
+
+                # Transform rio-tiler 7.x percentile format to legacy format for frontend compatibility
+                # Frontend expects percentiles as an array [percentile_2, percentile_98]
+                for b in info.get('statistics', {}):
+                    if 'percentile_2' in info['statistics'][b] and 'percentile_98' in info['statistics'][b]:
+                        info['statistics'][b]['percentiles'] = [
+                            info['statistics'][b]['percentile_2'],
+                            info['statistics'][b]['percentile_98']
+                        ]
         except IndexError as e:
             # Caught when trying to get an invalid raster metadata
             # or when the crop area is defined improperly. In order
@@ -224,8 +285,15 @@ class Metadata(TaskNestedView):
             for b in info['statistics']:
                 info['statistics'][b]['min'] = hrange[0]
                 info['statistics'][b]['max'] = hrange[1]
-                info['statistics'][b]['percentiles'][0] = max(hrange[0], info['statistics'][b]['percentiles'][0])
-                info['statistics'][b]['percentiles'][1] = min(hrange[1], info['statistics'][b]['percentiles'][1])
+                # In rio-tiler 7.x, percentiles are percentile_2 and percentile_98, not an array
+                if 'percentile_2' in info['statistics'][b]:
+                    info['statistics'][b]['percentile_2'] = max(hrange[0], info['statistics'][b]['percentile_2'])
+                if 'percentile_98' in info['statistics'][b]:
+                    info['statistics'][b]['percentile_98'] = min(hrange[1], info['statistics'][b]['percentile_98'])
+                # Update the percentiles array for frontend compatibility
+                if 'percentiles' in info['statistics'][b]:
+                    info['statistics'][b]['percentiles'][0] = info['statistics'][b]['percentile_2']
+                    info['statistics'][b]['percentiles'][1] = info['statistics'][b]['percentile_98']
 
         cmap_labels = {
             "viridis": "Viridis",
@@ -285,12 +353,16 @@ class Metadata(TaskNestedView):
             info['maxzoom'] = info['minzoom']
         info['maxzoom'] += ZOOM_EXTRA_LEVELS
         info['minzoom'] -= ZOOM_EXTRA_LEVELS
-        info['bounds'] = {'value': bounds if bounds is not None else src.bounds, 'crs': src.dataset.crs}
+        # Convert CRS object to string for JSON serialization
+        # In rio-tiler 7.x, use get_geographic_bounds() to get lat/lon bounds for Leaflet
+        if bounds is None:
+            bounds = src.get_geographic_bounds(CRS.from_epsg(4326))
+        info['bounds'] = {'value': bounds, 'crs': 'EPSG:4326'}
 
         return Response(info)
 
 
-class Tiles(TaskNestedView):
+class Tiles(TilerTaskView):
     def get(self, request, pk=None, project_pk=None, tile_type="", z="", x="", y="", scale=1, ext=None):
         """
         Get a tile image
@@ -370,9 +442,8 @@ class Tiles(TaskNestedView):
             raise exceptions.NotFound()
 
         with COGReader(url) as src:
-            if not src.tile_exists(z, x, y):
-                raise exceptions.NotFound(_("Outside of bounds"))
-
+            # In rio-tiler 7.x, tile_exists() can cause OverflowError with some TMS configurations
+            # Skip the check and rely on zoom level validation and TileOutsideBounds exception handling
             minzoom, maxzoom = get_zoom_safe(src)
             has_alpha = has_alpha_band(src.dataset)
             if z < minzoom - ZOOM_EXTRA_LEVELS or z > maxzoom + ZOOM_EXTRA_LEVELS:
@@ -429,15 +500,16 @@ class Tiles(TaskNestedView):
                 tile_buffer = 16
 
             try:
+                # In rio-tiler 7.x, the parameter is 'buffer' not 'tile_buffer'
                 if expr is not None:
                     tile = src.tile(x, y, z, expression=expr, tilesize=tilesize, nodata=nodata,
                                     padding=padding,
-                                    tile_buffer=tile_buffer,
+                                    buffer=tile_buffer,
                                     resampling_method=resampling, vrt_options=vrt_options)
                 else:
                     tile = src.tile(x, y, z, indexes=indexes, tilesize=tilesize, nodata=nodata,
                                     padding=padding,
-                                    tile_buffer=tile_buffer,
+                                    buffer=tile_buffer,
                                     resampling_method=resampling, vrt_options=vrt_options)
             except TileOutsideBounds:
                 raise exceptions.NotFound(_("Outside of bounds"))
@@ -460,10 +532,9 @@ class Tiles(TaskNestedView):
                 if np.equal(tile.mask, 255).all():
                     ext = "jpg"
                 else:
-                    if 'image/webp' in request.headers.get('Accept', ''):
-                        ext = "webp"
-                    else:
-                        ext = "png"
+                    # In some GDAL builds, WEBP driver may not be available
+                    # Use PNG as a universally supported format
+                    ext = "png"
 
             driver = "jpeg" if ext == "jpg" else ext
 

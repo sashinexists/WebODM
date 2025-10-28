@@ -105,3 +105,9 @@ package-lock.json
 dpkg/build
 dpkg/deb
 .secret_key
+
+# Documentation folders (local reference only)
+for-claude/
+for-humans/
+CLAUDE.md
+
