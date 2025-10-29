@@ -1,66 +1,121 @@
-amqp==2.5.2
-appdirs==1.4.0
-APScheduler==3.2.0
-billiard==3.6.3.0
-celery==4.4.0
-coreapi>=2.3.3
-Django==2.2.27
-django-appconf==1.0.2
+# WebODM Requirements - Updated for Alpine 3.22 with Latest Versions
+# Python 3.12, Django 5.2 LTS, Celery 5.5
+
+# Core Django Framework
+Django==5.2.7
+djangorestframework==3.15.2
+django-cors-headers==4.5.0
+django-filter==24.3
+django-guardian==2.4.0
+
+# Django Extensions and Plugins
+django-appconf==1.0.6
 django-codemirror2==0.2
-django-colorfield==0.1.15
-django-cors-headers==3.0.2
-django-filter==2.4.0
-django-guardian==1.4.9
-django-imagekit==4.0.1
-django-redis==4.12.1
-django-webpack-loader==0.6.0
-djangorestframework==3.13.1
-djangorestframework-jwt==1.9.0
+django-colorfield==0.11.0
+django-imagekit==5.0.0
+django-redis==5.4.0
+django-webpack-loader==3.1.1
+
+# DRF Extensions
+drf-nested-routers==0.94.1
+drf-yasg==1.21.9
 djangorestframework-guardian==0.3.0
-drf-nested-routers==0.11.1
-funcsigs==1.0.2
-futures==3.1.1
+
+# Celery and Task Queue
+celery==5.5.3
+redis==5.2.1
+kombu==5.5.2
+billiard==4.2.1
+amqp==5.3.1
+vine==5.1.0
+
+# Task Scheduling
+APScheduler==3.10.4
+
+# API and Documentation
+coreapi==2.3.3
+openapi-codec==1.3.2
+uritemplate==4.1.1
+itypes==1.2.0
+
+# Geospatial Libraries
+# GDAL will be installed via pip with matching version from Alpine (3.9.x)
+# This is handled dynamically in Dockerfile
+rasterio==1.4.3
+rio-tiler==7.9.2
+rio-color==2.0.1
+rio-cogeo==5.3.5
+# Shapely will be installed from Alpine repos (py3-shapely) - no musllinux wheels available
+# geodeep removed - requires onnxruntime which doesn't support Alpine (musllinux)
+# Object detection plugin will gracefully fail if used
+
+# Scientific Computing
+numpy==2.1.3
+scipy==1.14.1
+
+# Image Processing
+Pillow==11.0.0
+piexif==1.1.3
+pilkit==3.0
+olefile==0.47
+
+# Database
+psycopg2-binary==2.9.10
+
+# HTTP and Networking
+requests>=2.32.3
+requests-toolbelt==1.0.0
+
+# Server
 gunicorn==23.0.0
-geodeep==0.9.8
-itypes==1.1.0
-kombu==4.6.7
-Markdown==3.3.4
-olefile==0.44
-openapi-codec==1.1.7
-packaging==16.8
-piexif==1.0.13
-pilkit==2.0
-Pillow==8.3.2
-pip-autoremove==0.9.0
-psycopg2-binary==2.8.6
-PyJWT==1.5.3
-pydantic==1.10.8
+
+# Authentication and Security
+# Using djangorestframework-simplejwt instead of unmaintained djangorestframework-jwt
+djangorestframework-simplejwt==5.5.1
+
+# Data Validation
+pydantic==2.10.4
+
+# pyodm - OpenDroneMap Python Library
 pyodm==1.5.11
-pyparsing==2.4.7
-pytz==2020.1
-rcssmin==1.0.6
-redis==3.2.0
-requests-toolbelt==0.9.1
-requests>=2.21.0
-rfc3987==1.3.7
-rjsmin==1.0.12
-simplejson==3.10.0
-six==1.11.0
+
+# Utilities
+packaging==24.2
+pyparsing==3.2.1
+pytz==2025.1
+tzlocal==5.2
+Markdown==3.7
+simplejson==3.19.3
+six==1.17.0
+funcsigs==1.0.2
+appdirs==1.4.4
+
+# Color and Web Utilities
+webcolors==24.11.1
+
+# File Handling
+zipstream-ng==1.9.0
+
+# Asset Compression
+rcssmin==1.1.2
+rjsmin==1.2.3
+
+# Translations
+# gettext is installed as a system package, not via pip
+
+# CLI Utilities
+pip-autoremove==0.10.0
+
+# Pin setuptools to avoid pkg_resources deprecation warnings
+# pkg_resources will be removed in setuptools>=81
+setuptools<81
+
+# Validation
+rfc3987==1.3.8
 strict-rfc3339==0.7
-tzlocal==1.3
-uritemplate==3.0.0
-vine==1.3.0
-webcolors==1.5
-rio-tiler==2.1.2
-rio-color==1.0.4
-rio-cogeo==2.3.1
-rasterio==1.2.9 ; sys_platform == 'linux' or sys_platform == 'darwin'
-https://github.com/OpenDroneMap/WebODM/releases/download/v1.9.7/rasterio-1.2.10-cp39-cp39-win_amd64.whl ; sys_platform == "win32"
-https://github.com/OpenDroneMap/WebODM/releases/download/v1.9.7/GDAL-3.3.3-cp39-cp39-win_amd64.whl ; sys_platform == "win32"
-Shapely==1.8.0 ; sys_platform == "win32"
-eventlet==0.32.0 ; sys_platform == "win32"
-pyopenssl==24.0.0 ; sys_platform == "win32"
-numpy==1.26.2
-scipy==1.11.3
-drf-yasg==1.20.0
-zipstream-ng==1.8.0
+
+# Platform-specific packages
+# Windows-only packages removed as we're on Alpine Linux
+
+# boto3 for S3/cloud storage
+boto3>=1.35.0

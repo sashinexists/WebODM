@@ -1,8 +1,9 @@
-# This configuration builds from Dockerfiles 
+# This configuration builds from Dockerfiles
 # instead of pulling from opendronemap hub
 version: '2.1'
 services:
-  db:
-    build: ./db
+  # db: Commented out - use official postgis/postgis:14-3.3-alpine image from docker-compose.yml
+  # db:
+  #   build: ./db
   webapp:
     build: .

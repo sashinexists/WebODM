@@ -213,11 +213,9 @@ def export_raster(input, output, progress_callback=None, **opts):
 
         if rgb and rescale is None:
             # Compute min max
-            nodata = None
-            if asset_type == 'orthophoto':
-                nodata = 0
-            md = ds_src.metadata(pmin=2.0, pmax=98.0, hist_options={"bins": 255}, nodata=nodata)
-            rescale = [md['statistics']['1']['min'], md['statistics']['1']['max']]
+            # In rio-tiler 7.x, use statistics() instead of metadata()
+            stats = ds_src.statistics(percentiles=[2.0, 98.0], hist_options={"bins": 255})
+            rescale = [stats['1'].min, stats['1'].max]
 
         ci = src.colorinterp
         alpha_index = None

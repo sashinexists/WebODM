@@ -22,5 +22,21 @@ fi
 # docker-compose.toolbox.yml adds SELinux labels needed for Fedora/Podman
 export COMPOSE_FILE=docker-compose.yml:docker-compose.toolbox.yml
 
+# Create docker wrapper function for podman if docker doesn't exist
+if ! command -v docker &> /dev/null; then
+    docker() {
+        podman "$@"
+    }
+    export -f docker
+
+    # Also create docker-compose wrapper if needed
+    if ! command -v docker-compose &> /dev/null; then
+        docker-compose() {
+            podman compose "$@"
+        }
+        export -f docker-compose
+    fi
+fi
+
 # Run the original webodm.sh with podman
 exec ./webodm.sh "$@"

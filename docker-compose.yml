@@ -6,18 +6,23 @@ volumes:
   appmedia:
 services:
   db:
-    image: opendronemap/webodm_db
+    image: postgis/postgis:14-3.3-alpine
     container_name: db
     expose:
       - "5432"
     volumes:
       - ${WO_DB_DIR}:/var/lib/postgresql/data:Z
+      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
     restart: unless-stopped
     oom_score_adj: -100
+    environment:
+      - POSTGRES_DB=webodm_dev
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
   webapp:
     image: opendronemap/webodm_webapp
     container_name: webapp
-    entrypoint: /bin/bash -c "service cron start && chmod +x /webodm/*.sh && /bin/bash -c \"/webodm/wait-for-postgres.sh db /webodm/wait-for-it.sh -t 0 broker:6379 -- /webodm/start.sh\""
+    entrypoint: /bin/bash -c "crond && chmod +x /webodm/*.sh && /bin/bash -c \"/webodm/wait-for-postgres.sh db /webodm/wait-for-it.sh -t 0 broker:6379 -- /webodm/start.sh\""
     volumes:
       - ${WO_MEDIA_DIR}:/webodm/app/media:z
     ports:
@@ -27,6 +32,7 @@ services:
       - broker
       - worker
     environment:
+      - PGPASSWORD=postgres
       - WO_PORT
       - WO_HOST
       - WO_DEBUG
@@ -52,6 +58,7 @@ services:
       - db
       - broker
     environment:
+      - PGPASSWORD=postgres
       - WO_BROKER
       - WO_DEBUG
       - WO_SECRET_KEY
