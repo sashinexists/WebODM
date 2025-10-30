@@ -22,5 +22,12 @@ fi
 # docker-compose.toolbox.yml adds SELinux labels needed for Fedora/Podman
 export COMPOSE_FILE=docker-compose.yml:docker-compose.toolbox.yml
 
+# Fix SELinux context on db/init.sql for Fedora/SELinux compatibility
+# This allows the PostgreSQL container to read the initialization script
+if [ -f db/init.sql ] && command -v chcon &> /dev/null; then
+    echo "Setting SELinux context on db/init.sql..."
+    chcon -t container_file_t db/init.sql 2>/dev/null || true
+fi
+
 # Run the original webodm.sh with podman
 exec ./webodm.sh "$@"

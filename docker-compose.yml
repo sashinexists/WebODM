@@ -3,15 +3,30 @@
 version: '2.1'
 volumes:
   dbdata:
+  dbdata_pg18:
   appmedia:
 services:
   db:
-    image: opendronemap/webodm_db
+    image: postgis/postgis:18-3.6-alpine
     container_name: db
     expose:
       - "5432"
     volumes:
-      - ${WO_DB_DIR}:/var/lib/postgresql/data:Z
+      - ${WO_DB_DIR}:/var/lib/postgresql/data
+      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    environment:
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_HOST_AUTH_METHOD=trust
+    command: >
+      postgres
+      -c autovacuum_max_workers=6
+      -c autovacuum_naptime=15s
+      -c autovacuum_vacuum_threshold=25
+      -c autovacuum_vacuum_scale_factor=0.1
+      -c autovacuum_analyze_threshold=10
+      -c autovacuum_analyze_scale_factor=0.05
+      -c autovacuum_vacuum_cost_delay=10ms
+      -c autovacuum_vacuum_cost_limit=1000
     restart: unless-stopped
     oom_score_adj: -100
   webapp:
