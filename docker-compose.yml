@@ -3,7 +3,6 @@
 version: '2.1'
 volumes:
   dbdata:
-  dbdata_pg18:
   appmedia:
 services:
   db:
@@ -12,7 +11,7 @@ services:
     expose:
       - "5432"
     volumes:
-      - ${WO_DB_DIR}:/var/lib/postgresql/data
+      - ${WO_DB_DIR}:/var/lib/postgresql:z
       - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
     environment:
       - POSTGRES_PASSWORD=postgres
